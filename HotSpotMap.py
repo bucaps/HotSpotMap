@@ -23,12 +23,9 @@ from matplotlib.colors import LinearSegmentedColormap
 import argparse
 from sys import argv
 
-# home co-ordinates
-xpos_home = 0
-ypos_home = 0
+msg_prefix = "  HotSpotMap:"
 
-msg_prefix = "[HotSpotMap]"
-
+# Colors used for temperature map
 colors = [
     "#ff0000",
     "#ff3300",
@@ -53,6 +50,13 @@ colors = [
     "#0000ff",
 ]
 
+# Home co-ordinates for drawing the chip floor-plan
+# Note: turtle's default home co-ordinates are (0,0)
+# For drawing the floor-plan, we will start from (-w/2,-h/2), where
+# w = width of the chip, h = height of the chip
+chip_home_xpos = 0
+chip_home_ypos = 0
+
 
 class FlpUnit():
     def __init__(self, name, width, height, xpos, ypos, temp=0):
@@ -61,7 +65,7 @@ class FlpUnit():
         self.height = height
         self.xpos = xpos
         self.ypos = ypos
-        self.temp = temp
+        self.temp = temp # temperature
 
 
 def turtle_setup(config):
@@ -72,18 +76,18 @@ def turtle_setup(config):
     ts.reset()
     ts.colormode(255)
     ts.tracer(0, 0)
-    global xpos_home
-    xpos_home = -(cw / 2)
-    global ypos_home
-    ypos_home = -(ch / 2)
+    global chip_home_xpos
+    chip_home_xpos = -(cw / 2)
+    global chip_home_ypos
+    chip_home_ypos = -(ch / 2)
 
     # create turtle cursor
     t = turtle.Turtle()
     t.pen(shown=False)
-    t.width(0.5)
+    t.width(1)
     t.hideturtle()
     t.penup()
-    t.setpos(xpos_home, ypos_home)
+    t.setpos(chip_home_xpos, chip_home_ypos)
     return t
 
 
@@ -107,8 +111,87 @@ def turtle_save_image(config):
     print("{p} generated pdf file: {f}".format(p=msg_prefix, f=pdf_file))
 
 
-def get_pos(xpos, ypos):
-    return (xpos_home + xpos, ypos_home + ypos)
+def get_pos_from_chip_home(xpos, ypos):
+    return (chip_home_xpos + xpos, chip_home_ypos + ypos)
+
+
+def draw_chip_dimensions(t, config):
+    # draw height scale on left of the floor-plan
+    arrow_height = 15
+    xpos = -30
+    ypos = 0
+    t.penup()
+    t.setpos(get_pos_from_chip_home(xpos, ypos))
+    t.left(90)
+    t.pendown()
+    t.forward(config.chip_height * 1e-3 * config.zoom_by)
+    temp = t.pos()
+    t.left(135)
+    t.forward(arrow_height)
+    t.setpos(temp)
+    t.right(270)
+    t.forward(arrow_height)
+    t.penup()
+    t.setpos(get_pos_from_chip_home(xpos, ypos))
+    t.pendown()
+    t.left(90)
+    t.forward(arrow_height)
+    t.penup()
+    t.setpos(get_pos_from_chip_home(xpos, ypos))
+    t.right(270)
+    t.pendown()
+    t.forward(arrow_height)
+    t.right(135)  # reset
+    t.penup()
+
+    canvas = turtle.getcanvas()
+    xpos = -45
+    ypos = (config.chip_height * 1e-3 * config.zoom_by) / 2
+    pos = get_pos_from_chip_home(xpos, ypos)
+    canvas.create_text(pos[0],
+                       pos[1],
+                       text="Height {h} mm".format(h=config.chip_height),
+                       angle=90,
+                       font=(config.font, config.font_size,
+                             config.font_weight))
+
+    # draw width scale on top of the floor-plan
+    xpos = 0
+    ypos = (config.chip_height * 1e-3 * config.zoom_by) + 30
+    t.penup()
+    t.setpos(get_pos_from_chip_home(xpos, ypos))
+    t.pendown()
+    t.forward(config.chip_width * 1e-3 * config.zoom_by)
+    temp = t.pos()
+    t.left(135)
+    t.forward(arrow_height)
+    t.setpos(temp)
+    t.right(270)
+    t.forward(arrow_height)
+    t.penup()
+    t.setpos(get_pos_from_chip_home(xpos, ypos))
+    t.pendown()
+    t.left(90)
+    t.forward(arrow_height)
+    t.penup()
+    t.setpos(get_pos_from_chip_home(xpos, ypos))
+    t.right(270)
+    t.pendown()
+    t.forward(arrow_height)
+    t.penup()
+
+    canvas = turtle.getcanvas()
+    xpos = (config.chip_width * 1e-3 * config.zoom_by) / 2
+    ypos = -45
+    print((xpos, ypos))
+    pos = get_pos_from_chip_home(xpos, ypos)
+    print(pos)
+    canvas.create_text(pos[0],
+                       pos[1],
+                       text="Width {w} mm".format(w=config.chip_width),
+                       angle=0,
+                       font=(config.font, config.font_size,
+                             config.font_weight))
 
 
 # Color map for temperatures
@@ -132,7 +215,7 @@ def draw_unit(t,
               hide_names=True):
     xpos *= config.zoom_by
     ypos *= config.zoom_by
-    pos = get_pos(xpos, ypos)
+    pos = get_pos_from_chip_home(xpos, ypos)
     xpos = pos[0]
     ypos = pos[1]
     width *= config.zoom_by
@@ -159,7 +242,13 @@ def draw_unit(t,
         t.setpos(xpos + (width / 2), ypos + (height / 2))
         t.pendown()
         t.color("black")
-        t.write(name,
+        print_name = name
+        if config.print_area:
+            area = (width / config.zoom_by) * (height /
+                                               config.zoom_by) * 1e6  # mm2
+            area = round(area, 3)
+            print_name += " ({a})".format(a=area)
+        t.write(print_name,
                 align="center",
                 font=(config.font, config.font_size, config.font_weight))
         t.penup()
@@ -210,8 +299,8 @@ def draw_color_bar(t, config, colors, temp_min, temp_max):
 
 
 # This parses the given temperature file and extracts
-# 1) number of rows and columns
-# 2) min and max temperatures
+# 1) number of rows and columns (for grid steady file)
+# 2) min and max temperatures (for steady and grid steady file)
 def get_temperature_file_config(temperature_file):
     file = open(temperature_file, "r")
     lines = file.readlines()
@@ -428,12 +517,15 @@ def parse_command_line():
                         dest="floor_plan",
                         required=True,
                         help="Floor-plan file")
-    parser.add_argument("-t",
-                        "--temperature",
-                        action="store",
-                        dest="temperature_file",
-                        required=("steady" in argv) or ("grid-steady" in argv),
-                        help="Steady temperature file or Grid steady temperature file based on action")
+    parser.add_argument(
+        "-t",
+        "--temperature",
+        action="store",
+        dest="temperature_file",
+        required=("steady" in argv) or ("grid-steady" in argv),
+        help=
+        "Steady temperature file or Grid steady temperature file based on action"
+    )
     parser.add_argument("-cw",
                         "--chip-width",
                         action="store",
@@ -498,6 +590,23 @@ def parse_command_line():
                         required=False,
                         default=75000,
                         help="Zoom factor")
+    parser.add_argument("-pcd",
+                        "--print-chip-dim",
+                        action="store_true",
+                        dest="print_chip_dim",
+                        required=False,
+                        default=False,
+                        help="Draw chip width and height scale")
+    parser.add_argument(
+        "-pa",
+        "--print-area",
+        action="store_true",
+        dest="print_area",
+        required=False,
+        default=False,
+        help=
+        "Print unit's area (mm2) alongside its name, rounded to three decimal places"
+    )
     args = parser.parse_args()
     print("{p} {d}".format(p=msg_prefix, d=description))
     return args
@@ -517,6 +626,8 @@ def main():
         else:
             draw_steady_thermal_map(config, turtle)
 
+    if config.print_chip_dim:
+        draw_chip_dimensions(turtle, config)
     turtle_save_image(config)
 
 
