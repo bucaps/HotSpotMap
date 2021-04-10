@@ -29,7 +29,7 @@ git clone https://github.com/bucaps/HotSpotMap.git
 
 ```
 # This will generate ev6-flp.eps and ev6-flp.pdf in the example-2d directory
-python3.5 HotSpotMap.py -a flp -f example-2d/ev6.flp -cw 16 -ch 16 -o ev6 -z 30000 -fts 7 -d example-2d
+python3.5 HotSpotMap.py -a flp -f example-2d/ev6.flp -cw 16 -ch 16 -o ev6 -z 30000 -fts 7 -d example-2d -pcd
 ```
 
 - `-a` : action {`flp` or `steady` or `grid-steady`}
@@ -38,6 +38,8 @@ python3.5 HotSpotMap.py -a flp -f example-2d/ev6.flp -cw 16 -ch 16 -o ev6 -z 300
 - `-o` : prefix for output file
 - `-z` : zoom level 
 - `-fts` : font size
+- `-d` : output directory
+- `-pcd` : print chip's width and height
 
 ### To generate a thermal map using a steady temperature file:
 
@@ -55,6 +57,8 @@ python3.5 HotSpotMap.py -a steady -f example-2d/ev6.flp -t example-2d/gcc.steady
 python3.5 HotSpotMap.py -a grid-steady -f example-2d/ev6.flp -t example-2d/gcc.grid.steady -cw 16 -ch 16 -o ev6 -z 30000 -fts 7 -d example-2d
 ```
 
+- `-t` : path to grid steady temperature file
+
 ### Important Note
 You can try out various levels of zoom `-z` and font-size `-fts` until you find a combination that suits your chip floor plan.
 
@@ -66,7 +70,6 @@ python3.5 HotSpotMap.py -h
 
 Currently, supported options are:
 ```
-
   -h, --help            show this help message and exit
   -a {flp,steady,grid-steady}, --action {flp,steady,grid-steady}
                         Action type
@@ -92,6 +95,10 @@ Currently, supported options are:
   -hn, --hide-names     Hide names on floor-plan
   -z ZOOM_BY, --zoom-by ZOOM_BY
                         Zoom factor
+  -pcd, --print-chip-dim
+                        Draw chip width and height scale
+  -pa, --print-area     Print unit's area alongside its name
+
 ```
 
 ### License
