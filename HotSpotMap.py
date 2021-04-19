@@ -3,19 +3,20 @@
 # This tool uses python's turtle library
 #
 # Author: Gaurav Kothari (gkothar1@binghamton.edu) Copyright 2021
-# 
 #
 # This tool generates:
 # 1) Floor-plan image (using floor-plan file)
 # 2) Thermal map (using floor-plan file and steady temperature file)
 # 3) Fine grained thermal map (using floor-plan file and grid steady temperature file)
-# 
-# Output formats: '.eps' and '.pdf'
+#
+# Supports 2D and 3D stacked systems
+# Supports output formats: '.eps' and '.pdf'
 import os
 import time
 import subprocess
 import tkinter
 import turtle
+import tempfile
 import numpy as np
 import matplotlib
 from matplotlib import cm
@@ -23,32 +24,19 @@ from matplotlib.colors import LinearSegmentedColormap
 import argparse
 from sys import argv
 
-msg_prefix = "  HotSpotMap:"
 
-# Colors used for temperature map
-colors = [
-    "#ff0000",
-    "#ff3300",
-    "#ff6600",
-    "#ff9900",
-    "#ffcc00",
-    "#ffff00",
-    "#ccff00",
-    "#99ff00",
-    "#66ff00",
-    "#33ff00",
-    "#00ff00",
-    "#00ff33",
-    "#00ff66",
-    "#00ff99",
-    "#00ffcc",
-    "#00ffff",
-    "#00ccff",
-    "#0099ff",
-    "#0066ff",
-    "#0033ff",
-    "#0000ff",
-]
+# To represent each floor-plan unit
+class FloorplanUnit():
+    def __init__(self, name, width, height, xpos, ypos, temp=0):
+        self.name = name
+        self.width = width
+        self.height = height
+        self.xpos = xpos
+        self.ypos = ypos
+        self.temp = temp  # temperature
+
+
+msg_prefix = "  HotSpotMap:"
 
 # Home co-ordinates for drawing the chip floor-plan
 # Note: turtle's default home co-ordinates are (0,0)
@@ -58,16 +46,46 @@ chip_home_xpos = 0
 chip_home_ypos = 0
 
 
-class FlpUnit():
-    def __init__(self, name, width, height, xpos, ypos, temp=0):
-        self.name = name
-        self.width = width
-        self.height = height
-        self.xpos = xpos
-        self.ypos = ypos
-        self.temp = temp # temperature
+# Inspired from HotSpot 6.0
+def get_chip_width(flp_units):
+    min_x = flp_units[0].xpos
+    max_x = flp_units[0].xpos + flp_units[0].width
+
+    for i in range(1, len(flp_units)):
+        if flp_units[i].xpos < min_x:
+            min_x = flp_units[i].xpos
+        if (flp_units[i].xpos + flp_units[i].width) > max_x:
+            max_x = flp_units[i].xpos + flp_units[i].width
+
+    return (max_x - min_x) * 1e3
 
 
+# Inspired from HotSpot 6.0
+def get_chip_height(flp_units):
+    min_y = flp_units[0].ypos
+    max_y = flp_units[0].ypos + flp_units[0].height
+
+    for i in range(1, len(flp_units)):
+        if flp_units[i].ypos < min_y:
+            min_y = flp_units[i].ypos
+        if (flp_units[i].ypos + flp_units[i].height) > max_y:
+            max_y = flp_units[i].ypos + flp_units[i].height
+
+    return (max_y - min_y) * 1e3
+
+
+def get_pos_from_chip_home(xpos, ypos):
+    return (chip_home_xpos + xpos, chip_home_ypos + ypos)
+
+
+# Only for 3D systems, collect all the output files
+# (for every layer) to combine them later as a single PDF
+output_3d_files = []
+
+
+#
+# Functions related to Turtle
+#
 def turtle_setup(config):
     # setup screen
     ts = turtle.Screen()
@@ -84,7 +102,7 @@ def turtle_setup(config):
     # create turtle cursor
     t = turtle.Turtle()
     t.pen(shown=False)
-    t.width(1)
+    t.pensize(0.5)
     t.hideturtle()
     t.penup()
     t.setpos(chip_home_xpos, chip_home_ypos)
@@ -104,15 +122,65 @@ def turtle_save_image(config):
     canvas.config(width=config.chip_width * 1e-3 * config.zoom_by,
                   height=config.chip_height * 1e-3 * config.zoom_by)
     canvas.postscript(file=eps_file)
-    print("{p} generated eps file: {f}".format(p=msg_prefix, f=eps_file))
+    print("{p} Generated eps file: {f}".format(p=msg_prefix, f=eps_file))
     cmd = "ps2pdf {i} {o}".format(i=eps_file, o=pdf_file)
     process = subprocess.Popen(cmd, shell=True)
     process.wait()
-    print("{p} generated pdf file: {f}".format(p=msg_prefix, f=pdf_file))
+    print("{p} Generated pdf file: {f}".format(p=msg_prefix, f=pdf_file))
+
+    if config.model_3d:
+        output_3d_files.append(pdf_file)
 
 
-def get_pos_from_chip_home(xpos, ypos):
-    return (chip_home_xpos + xpos, chip_home_ypos + ypos)
+def turtle_draw_unit(t,
+                     xpos,
+                     ypos,
+                     width,
+                     height,
+                     config,
+                     name,
+                     border_color="",
+                     fill_color="",
+                     hide_names=True):
+    xpos *= config.zoom_by
+    ypos *= config.zoom_by
+    pos = get_pos_from_chip_home(xpos, ypos)
+    xpos = pos[0]
+    ypos = pos[1]
+    width *= config.zoom_by
+    height *= config.zoom_by
+    t.penup()
+    t.setpos(xpos, ypos)
+    t.color(border_color, fill_color)
+    if fill_color:
+        t.begin_fill()
+    t.pendown()
+    t.forward(width)
+    t.left(90)
+    t.forward(height)
+    t.left(90)
+    t.forward(width)
+    t.left(90)
+    t.forward(height)
+    t.left(90)
+    if fill_color:
+        t.end_fill()
+    t.penup()
+
+    if name and (hide_names == False):
+        t.setpos(xpos + (width / 2), ypos + (height / 2))
+        t.pendown()
+        t.color("black")
+        print_name = name
+        if config.print_area:
+            area = (width / config.zoom_by) * (height /
+                                               config.zoom_by) * 1e6  # mm2
+            area = round(area, 3)
+            print_name += " ({a})".format(a=area)
+        t.write(print_name,
+                align="center",
+                font=(config.font, config.font_size, config.font_weight))
+        t.penup()
 
 
 def draw_chip_dimensions(t, config):
@@ -121,6 +189,7 @@ def draw_chip_dimensions(t, config):
     xpos = -30
     ypos = 0
     t.penup()
+    t.color("black")
     t.setpos(get_pos_from_chip_home(xpos, ypos))
     t.left(90)
     t.pendown()
@@ -183,15 +252,43 @@ def draw_chip_dimensions(t, config):
     canvas = turtle.getcanvas()
     xpos = (config.chip_width * 1e-3 * config.zoom_by) / 2
     ypos = -45
-    print((xpos, ypos))
     pos = get_pos_from_chip_home(xpos, ypos)
-    print(pos)
     canvas.create_text(pos[0],
                        pos[1],
                        text="Width {w} mm".format(w=config.chip_width),
                        angle=0,
                        font=(config.font, config.font_size,
                              config.font_weight))
+
+
+#
+# Function related to temperature color bar
+#
+
+# Colors used for temperature map
+colors = [
+    "#ff0000",
+    "#ff3300",
+    "#ff6600",
+    "#ff9900",
+    "#ffcc00",
+    "#ffff00",
+    "#ccff00",
+    "#99ff00",
+    "#66ff00",
+    "#33ff00",
+    "#00ff00",
+    "#00ff33",
+    "#00ff66",
+    "#00ff99",
+    "#00ffcc",
+    "#00ffff",
+    "#00ccff",
+    "#0099ff",
+    "#0066ff",
+    "#0033ff",
+    "#0000ff",
+]
 
 
 # Color map for temperatures
@@ -201,57 +298,6 @@ def get_chip_temp_cmap():
     cmap = matplotlib.colors.LinearSegmentedColormap.from_list(
         "chipTemp", colors)
     return cmap
-
-
-def draw_unit(t,
-              xpos,
-              ypos,
-              width,
-              height,
-              config,
-              name,
-              border_color="",
-              fill_color="",
-              hide_names=True):
-    xpos *= config.zoom_by
-    ypos *= config.zoom_by
-    pos = get_pos_from_chip_home(xpos, ypos)
-    xpos = pos[0]
-    ypos = pos[1]
-    width *= config.zoom_by
-    height *= config.zoom_by
-    t.penup()
-    t.setpos(xpos, ypos)
-    t.color(border_color, fill_color)
-    if fill_color:
-        t.begin_fill()
-    t.pendown()
-    t.forward(width)
-    t.left(90)
-    t.forward(height)
-    t.left(90)
-    t.forward(width)
-    t.left(90)
-    t.forward(height)
-    t.left(90)
-    if fill_color:
-        t.end_fill()
-    t.penup()
-
-    if name and (hide_names == False):
-        t.setpos(xpos + (width / 2), ypos + (height / 2))
-        t.pendown()
-        t.color("black")
-        print_name = name
-        if config.print_area:
-            area = (width / config.zoom_by) * (height /
-                                               config.zoom_by) * 1e6  # mm2
-            area = round(area, 3)
-            print_name += " ({a})".format(a=area)
-        t.write(print_name,
-                align="center",
-                font=(config.font, config.font_size, config.font_weight))
-        t.penup()
 
 
 def draw_color_bar(t, config, colors, temp_min, temp_max):
@@ -274,73 +320,138 @@ def draw_color_bar(t, config, colors, temp_min, temp_max):
     i = 0
     for color in colors:
         # draw the temperature value
-        draw_unit(t,
-                  xpos,
-                  ypos,
-                  temp_cell_width,
-                  temp_cell_height,
-                  config,
-                  name="{f}K".format(f=temp_values[i]),
-                  border_color="",
-                  fill_color="",
-                  hide_names=False)
+        turtle_draw_unit(t,
+                         xpos,
+                         ypos,
+                         temp_cell_width,
+                         temp_cell_height,
+                         config,
+                         name="{f}K".format(f=temp_values[i]),
+                         border_color="",
+                         fill_color="",
+                         hide_names=False)
         # color cell
-        draw_unit(t,
-                  xpos + temp_cell_width,
-                  ypos,
-                  color_cell_width,
-                  color_cell_height,
-                  config,
-                  name="",
-                  border_color="black",
-                  fill_color=color)
+        turtle_draw_unit(t,
+                         xpos + temp_cell_width,
+                         ypos,
+                         color_cell_width,
+                         color_cell_height,
+                         config,
+                         name="",
+                         border_color="black",
+                         fill_color=color)
         ypos += color_cell_height
         i += 1
 
 
+#
+# Functions related to drawing chip floor-plan
+#
+
+
+# Checks if floor-plan has duplicated units
+def check_duplicated_flp_units(flp_units_names):
+    flp_units_namesSet = set(flp_units_names)
+
+    if len(flp_units_namesSet) != len(flp_units_names):
+        print("{p} warning! duplicated floor-plan units detected".format(
+            p=msg_prefix))
+
+
+def draw_floorplan(config, t):
+    start = time.time()
+    file = open(config.floor_plan, "r")
+    flp = file.readlines()
+    flp_units = []
+    flp_units_names = []
+
+    for line in flp:
+        if "#" in line or line == "\n" or not line:
+            continue
+        line = line.split("\t")
+        flp_units_names.append(line[0])
+        flp_units.append(
+            FloorplanUnit(line[0], float(line[1]), float(line[2]),
+                          float(line[3]), float(line[4])))
+
+    check_duplicated_flp_units(flp_units_names)
+
+    print("{p} Drawing floor-plan".format(p=msg_prefix))
+    print(
+        "{p} Reading floor-plan file {f}: found {u} units, {w} mm chip-width, {h} mm chip-height"
+        .format(f=config.floor_plan,
+                p=msg_prefix,
+                u=len(flp_units),
+                w=config.chip_width,
+                h=config.chip_height))
+
+    file.close()
+
+    for unit in flp_units:
+        turtle_draw_unit(turtle,
+                         unit.xpos,
+                         unit.ypos,
+                         unit.width,
+                         unit.height,
+                         config,
+                         name=unit.name,
+                         border_color="black",
+                         fill_color="",
+                         hide_names=config.hide_names)
+
+    end = time.time()
+    print("{p} Finished drawing floor-plan in {t} seconds".format(
+        p=msg_prefix, t=round((end - start), 2)))
+
+
+#
+# Functions related to draw the temperature maps
+#
+
+
 # This parses the given temperature file and extracts
-# 1) number of rows and columns (for grid steady file)
-# 2) min and max temperatures (for steady and grid steady file)
-def get_temperature_file_config(temperature_file):
+# min and max temperatures (for steady and grid steady file)
+def get_temperature_file_config(temperature_file, grid_steady_file_3d=""):
     file = open(temperature_file, "r")
     lines = file.readlines()
-    num_rows = 0
-    num_cols = 0
-    total_cols = 0
 
     temperatures = []
     for line in lines:
-        if line == "\n":
-            total_cols = num_cols
-            num_rows += 1
-            num_cols = 0
+        if line == "\n" or not line:
             continue
         line = line.split("\t")
+        if len(line) == 1:
+            continue  # for 3D grid steady file, skip layer header
         temperatures.append(float(line[1]))
-        num_cols += 1
 
     file.close()
 
     grid_steady_config = []
-    grid_steady_config.append(str(num_rows))
-    grid_steady_config.append(str(total_cols))
     grid_steady_config.append(str(min(temperatures)))
     grid_steady_config.append(str(max(temperatures)))
     return grid_steady_config
 
 
-def draw_grid_steady_thermal_map(config, turtle):
+def draw_grid_steady_thermal_map(config, turtle, grid_steady_file_3d=""):
     start = time.time()
 
-    # find min and max temperatures reported in grid steady file
-    grid_steady_config = get_temperature_file_config(config.temperature_file)
+    temperature_limit_file = config.temperature_file
 
-    rows = int(grid_steady_config[0])
-    cols = int(grid_steady_config[1])
-    temp_min = float(grid_steady_config[2])
-    temp_max = float(grid_steady_config[3])
+    if config.model_3d:
+        # for 3D systems, use the original grid-steady file containing
+        # the temperature data for all the layers to extract min and max
+        # temperatures, because all the layers must use the same color range
+        temperature_limit_file = grid_steady_file_3d
+
+    # find min and max temperatures reported in grid steady file
+    grid_steady_config = get_temperature_file_config(temperature_limit_file)
+
+    rows = config.grid_rows
+    cols = config.grid_cols
+    temp_min = float(grid_steady_config[0])
+    temp_max = float(grid_steady_config[1])
     print(
-        "{p} reading grid steady file {f}, found {r} rows, {c} cols, {min} min-temp, {max} max-temp"
+        "{p} Reading grid steady file {f}, with {r} rows, {c} cols, {min} min-temp, {max} max-temp"
         .format(p=msg_prefix,
                 f=config.temperature_file,
                 r=rows,
@@ -365,13 +476,12 @@ def draw_grid_steady_thermal_map(config, turtle):
 
     xpos = 0
     ypos = (config.chip_height * 1e-3) - grid_cell_height
-    print("{p} drawing temperature grid".format(p=msg_prefix))
+    print("{p} Drawing temperature grid".format(p=msg_prefix))
 
+    next_col = 0
     for line in lines:
-        if line == "\n":
-            xpos = 0
-            ypos -= grid_cell_height
-            # parsed one complete row
+        if line == "\n" or not line:
+            continue
         else:
             line = line.split("\t")
             col = line[0]  # column number
@@ -379,20 +489,27 @@ def draw_grid_steady_thermal_map(config, turtle):
                 line[1])  # temperature of the cell at current row and column
 
             color = matplotlib.colors.rgb2hex(cmap(norm_temp_range(temp)))
-            draw_unit(turtle,
-                      xpos,
-                      ypos,
-                      grid_cell_width,
-                      grid_cell_height,
-                      config,
-                      name="",
-                      border_color=color,
-                      fill_color=color)
+            turtle_draw_unit(turtle,
+                             xpos,
+                             ypos,
+                             grid_cell_width,
+                             grid_cell_height,
+                             config,
+                             name="",
+                             border_color=color,
+                             fill_color=color)
             xpos += grid_cell_width
+            next_col += 1
+
+            if next_col == config.grid_cols:
+                # one complete row is finished
+                xpos = 0
+                next_col = 0
+                ypos -= grid_cell_height
 
     file.close()
     end = time.time()
-    print("{p} finished drawing temperature grid in {t} seconds".format(
+    print("{p} Finished drawing temperature grid in {t} seconds".format(
         p=msg_prefix, t=round((end - start), 2)))
 
 
@@ -401,9 +518,9 @@ def draw_steady_thermal_map(config, turtle):
     # find min and max temperatures reported in steady file
     steady_config = get_temperature_file_config(config.temperature_file)
 
-    temp_min = float(steady_config[2])
-    temp_max = float(steady_config[3])
-    print("{p} reading steady file {f}, found {min} min-temp, {max} max-temp".
+    temp_min = float(steady_config[0])
+    temp_max = float(steady_config[1])
+    print("{p} Reading steady file {f}, found {min} min-temp, {max} max-temp".
           format(p=msg_prefix,
                  f=config.temperature_file,
                  min=temp_min,
@@ -420,15 +537,15 @@ def draw_steady_thermal_map(config, turtle):
     # read all the floor-plan units
     file = open(config.floor_plan, "r")
     flp = file.readlines()
-    flpUnits = []
+    flp_units = []
 
     for line in flp:
         if "#" in line or line == "\n":
             continue
         line = line.split("\t")
-        flpUnits.append(
-            FlpUnit(line[0], float(line[1]), float(line[2]), float(line[3]),
-                    float(line[4])))
+        flp_units.append(
+            FloorplanUnit(line[0], float(line[1]), float(line[2]),
+                          float(line[3]), float(line[4])))
 
     file.close()
 
@@ -440,69 +557,251 @@ def draw_steady_thermal_map(config, turtle):
         name = line[0]
         temp = float(line[1])
 
-        for unit in flpUnits:
+        # for 3D steady temperature file, each unit is appended with prefix layer_<layer>_
+        # we need to remove that prefix
+        if config.model_3d and "layer_" in name:
+            name = name[name.find("_") + 1:]
+            name = name[name.find("_") + 1:]
+
+        for unit in flp_units:
             if unit.name == name:
                 color = matplotlib.colors.rgb2hex(cmap(norm_temp_range(temp)))
-                draw_unit(turtle,
-                          unit.xpos,
-                          unit.ypos,
-                          unit.width,
-                          unit.height,
-                          config,
-                          name=unit.name,
-                          border_color="black",
-                          fill_color=color,
-                          hide_names=config.hide_names)
+                turtle_draw_unit(turtle,
+                                 unit.xpos,
+                                 unit.ypos,
+                                 unit.width,
+                                 unit.height,
+                                 config,
+                                 name=unit.name,
+                                 border_color="black",
+                                 fill_color=color,
+                                 hide_names=config.hide_names)
 
     file.close()
     end = time.time()
-    print("{p} finished steady temperature map in {t} seconds".format(
+    print("{p} Finished steady temperature map in {t} seconds".format(
         p=msg_prefix, t=round((end - start), 2)))
 
 
-def draw_floorplan(config, t):
-    start = time.time()
+#
+# Function related to parse file for 3D system (such as LCF and grid-steady file)
+#
+
+
+# Parse HotSpot's layer configuration file (lcf) for 3D systems
+# For 3D systems, config.floor_plan is the lCF
+def read_lcf(config):
     file = open(config.floor_plan, "r")
+    lines = file.readlines()
+
+    config_lines = [
+    ]  # To store lcf after removing all the comments and blank lines
+
+    for line in lines:
+        if "#" in line or not line or line == "\n":
+            continue
+        config_lines.append(line)
+
+    file.close()
+
+    layer_num_pos = 0  # pos of layer number for the corresponding layer
+    has_power_pos = 2  # pos of power dissipation flag  for the corresponding layer
+    floor_plan_file_pos = 6  # pos of floor plan file for the corresponding layer
+
+    current_line = 0
+    current_layer = []
+
+    lcf_home_dir = os.path.dirname(config.floor_plan)
+    lcf_breakdown_list = []
+
+    while current_line < len(config_lines):
+        if current_line and ((current_line % 7) == 0):
+            temp = []
+            temp.append(current_layer[layer_num_pos].rstrip())
+            temp.append(current_layer[has_power_pos].rstrip())
+            temp.append(
+                os.path.join(lcf_home_dir,
+                             current_layer[floor_plan_file_pos].rstrip()))
+            lcf_breakdown_list.append(temp)
+            current_layer.clear()
+
+        current_layer.append(config_lines[current_line])
+        current_line += 1
+
+    print("{p} Finished reading lcf file: {f}, found {flp} floor-plan files".
+          format(p=msg_prefix,
+                 f=config.floor_plan,
+                 flp=len(lcf_breakdown_list)))
+
+    return lcf_breakdown_list
+
+
+def extract_grid_temperatures_for_layer(config, temperature_file, layer):
+    file = open(temperature_file, "r")
+    lines = file.readlines()
+    file.close()
+
+    # remove all the empty lines
+    cleaned_lines = []
+    for line in lines:
+        if line == "\n" or not line:
+            continue
+        cleaned_lines.append(line)
+
+    line_num = 0
+    look_for_layer = "layer_{l}".format(l=layer)
+
+    while cleaned_lines[line_num].rstrip() != look_for_layer:
+        line_num += 1
+
+    print(
+        "{p} Grid temperature data for layer {l} starts at line {n} in file: {f}"
+        .format(p=msg_prefix, l=layer, n=line_num, f=temperature_file))
+
+    # grid temperatures for current layer start at line_num
+    line_num += 1  # skip the header line for this layer
+    file = open("temp.grid.steady", "w")
+
+    # we will read grid_rows x grid_cols line from this line onwards
+    lines_read = line_num
+    lines_to_read = line_num + (config.grid_rows * config.grid_cols)
+
+    while lines_read < lines_to_read:
+        current_line = cleaned_lines[lines_read]
+        file.write("{l}\n".format(l=current_line.rstrip()))
+        lines_read += 1
+
+    file.close()
+
+
+# For 2D systems
+def main_2d(config):
+    turtle = turtle_setup(config)
+    if config.action == "flp":
+        draw_floorplan(config, turtle)
+    else:
+        if config.action == "grid-steady":
+            draw_grid_steady_thermal_map(config, turtle)
+            draw_floorplan(
+                config, turtle
+            )  # This will superimpose floor-plan onto temperature grid
+        else:
+            draw_steady_thermal_map(config, turtle)
+
+    if config.print_chip_dim:
+        draw_chip_dimensions(turtle, config)
+    turtle_save_image(config)
+
+
+# For 3D stacked systems
+def main_3d(config):
+    lcf_breakdown_list = read_lcf(config)
+
+    output_file_bkp = config.output_file
+    temperature_file_bkp = config.temperature_file
+
+    for lcf_layer in lcf_breakdown_list:
+        layer = int(lcf_layer[0])  # layer number
+
+        # override the config parameters
+        config.floor_plan = lcf_layer[2]
+        config.output_file = output_file_bkp
+        config.output_file += "-layer-{l}".format(l=layer)
+
+        turtle = turtle_setup(config)
+
+        print("{s} Processing layer {l} with floor-plan: {f}".format(
+            s=msg_prefix, l=layer, f=config.floor_plan))
+
+        if config.action == "flp":
+            draw_floorplan(config, turtle)
+        else:
+            if config.action == "grid-steady":
+                extract_grid_temperatures_for_layer(config,
+                                                    temperature_file_bkp,
+                                                    layer)
+
+                # this file has extracted grid temperatures for current layer
+                config.temperature_file = "temp.grid.steady"
+                draw_grid_steady_thermal_map(config, turtle,
+                                             temperature_file_bkp)
+                draw_floorplan(
+                    config, turtle
+                )  # this will superimpose floor-plan onto temperature grid
+                os.remove("temp.grid.steady")
+            else:
+                draw_steady_thermal_map(config, turtle)
+
+        if config.print_chip_dim:
+            draw_chip_dimensions(turtle, config)
+
+
+        turtle_save_image(config)
+
+        print("")
+
+    if config.concat:
+        # this code block combines all the files
+        # generated for each layer into a single PDF
+        output_file_list_str = ""
+
+        for file in output_3d_files:
+            output_file_list_str += "{f} ".format(f=file)
+
+        final_concat_output = os.path.join(
+            config.output_dir, "{p}-{a}-concat.pdf".format(p=output_file_bkp,a=config.action))
+
+        pdfjam = "pdfjam --nup {n}x1 --landscape {files} -o {output}".format(
+            n=len(output_3d_files),
+            files=output_file_list_str,
+            output=final_concat_output)
+
+        print("{p} Executing {c}".format(p=msg_prefix, c=pdfjam))
+        process = subprocess.Popen(pdfjam, shell=True)
+        process.wait()
+        stdout, stderr = process.communicate()
+
+        if stdout:
+            print(stdout)
+
+        if stderr:
+            print(stderr)
+
+
+def setup_chip_dimensions(config):
+    floor_plan_file = config.floor_plan
+
+    if config.model_3d:
+        lcf_breakdown_list = read_lcf(config)
+        # index 0 in lcf_breakdown_list is the 1st layer in 3D system
+        # index 2 in 1st layer is the floor-plan file for that layer
+        # for stacked 3D system, all layers must have equal dimensions, so pick any 1 layer
+        floor_plan_file = lcf_breakdown_list[0][2]
+
+    file = open(floor_plan_file, "r")
     flp = file.readlines()
-    flpUnits = []
+    flp_units = []
+    file.close()
 
     for line in flp:
-        if "#" in line or line == "\n":
+        if "#" in line or line == "\n" or not line:
             continue
         line = line.split("\t")
-        flpUnits.append(
-            FlpUnit(line[0], float(line[1]), float(line[2]), float(line[3]),
-                    float(line[4])))
+        flp_units.append(
+            FloorplanUnit(line[0], float(line[1]), float(line[2]),
+                          float(line[3]), float(line[4])))
 
-    file.close()
-    print("{p} drawing floor-plan".format(p=msg_prefix))
-    print(
-        "{p} reading floor-plan file {f}: found {u} units, {w}mm chip-width, {h}mm chip-height"
-        .format(f=config.floor_plan,
-                p=msg_prefix,
-                u=len(flpUnits),
-                w=config.chip_width,
-                h=config.chip_height))
+    config.chip_height = round(get_chip_height(flp_units), 5)
+    config.chip_width = round(get_chip_width(flp_units), 5)
 
-    for unit in flpUnits:
-        draw_unit(turtle,
-                  unit.xpos,
-                  unit.ypos,
-                  unit.width,
-                  unit.height,
-                  config,
-                  name=unit.name,
-                  border_color="black",
-                  fill_color="",
-                  hide_names=config.hide_names)
-
-    end = time.time()
-    print("{p} finished drawing floor-plan in {t} seconds".format(
-        p=msg_prefix, t=round((end - start), 2)))
+    print("{p} Calculated chip's width as {w} mm and chip's height as {h} mm".
+          format(p=msg_prefix, w=config.chip_width, h=config.chip_height))
 
 
 def parse_command_line():
-    description = "A python based temperature (thermal) map generation tool for HotSpot-6.0 (http://lava.cs.virginia.edu/HotSpot/), Author: Gaurav Kothari (gkothar1@binghamton.edu)"
+    version = 2.0
+    description = "A python based temperature (thermal) map generation tool for HotSpot-6.0 (http://lava.cs.virginia.edu/HotSpot/), Author: Gaurav Kothari (gkothar1@binghamton.edu) v{v}".format(
+        v=version)
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("-a",
                         "--action",
@@ -511,6 +810,13 @@ def parse_command_line():
                         required=True,
                         choices=["flp", "steady", "grid-steady"],
                         help="Action type")
+    parser.add_argument("-3D",
+                        "--model-3D",
+                        action="store_true",
+                        dest="model_3d",
+                        required=False,
+                        default=False,
+                        help="To indicate a 3D system")
     parser.add_argument("-f",
                         "--flp",
                         action="store",
@@ -526,20 +832,20 @@ def parse_command_line():
         help=
         "Steady temperature file or Grid steady temperature file based on action"
     )
-    parser.add_argument("-cw",
-                        "--chip-width",
+    parser.add_argument("-r",
+                        "--row",
                         action="store",
-                        type=float,
-                        dest="chip_width",
-                        required=True,
-                        help="Width of the chip (mm)")
-    parser.add_argument("-ch",
-                        "--chip-height",
+                        dest="grid_rows",
+                        type=int,
+                        required=("grid-steady" in argv),
+                        help="Number of rows in grid-steady model")
+    parser.add_argument("-c",
+                        "--col",
                         action="store",
-                        type=float,
-                        dest="chip_height",
-                        required=True,
-                        help="Height of the chip (mm)")
+                        dest="grid_cols",
+                        type=int,
+                        required=("grid-steady" in argv),
+                        help="Number of columns in grid-steady model")
     parser.add_argument("-ft",
                         "--font",
                         action="store",
@@ -596,7 +902,14 @@ def parse_command_line():
                         dest="print_chip_dim",
                         required=False,
                         default=False,
-                        help="Draw chip width and height scale")
+                        help="Draw chip' width and height scale")
+    parser.add_argument("-concat",
+                        "--concat-3D",
+                        action="store_true",
+                        dest="concat",
+                        required=False,
+                        default=False,
+                        help="Combines the images generated for all layer into a single PDF")
     parser.add_argument(
         "-pa",
         "--print-area",
@@ -609,26 +922,21 @@ def parse_command_line():
     )
     args = parser.parse_args()
     print("{p} {d}".format(p=msg_prefix, d=description))
+    print("")
     return args
 
 
 def main():
     config = parse_command_line()
 
-    turtle = turtle_setup(config)
-    if config.action == "flp":
-        draw_floorplan(config, turtle)
-    else:
-        if config.action == "grid-steady":
-            draw_grid_steady_thermal_map(config, turtle)
-            # This will superimpose floor-plan onto temperature grid
-            draw_floorplan(config, turtle)
-        else:
-            draw_steady_thermal_map(config, turtle)
+    # before we start drawing images, first quickly read floor-plan file
+    # and calculate the chip's width and height
+    setup_chip_dimensions(config)
 
-    if config.print_chip_dim:
-        draw_chip_dimensions(turtle, config)
-    turtle_save_image(config)
+    if config.model_3d:
+        main_3d(config)
+    else:
+        main_2d(config)
 
 
 if __name__ == "__main__":
